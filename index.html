@@ -232,6 +232,16 @@
       -webkit-box-orient: vertical;
     }
     .empty { padding: 24px 8px; color: var(--muted); text-align: center; }
+    .loadMoreBtn {
+      width: 100%;
+      min-height: 44px;
+      padding: 10px 14px;
+      color: var(--ink);
+      font-weight: 800;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
 
     .readerPane {
       min-width: 0;
@@ -390,7 +400,7 @@
         <div class="meter"><i id="progressMeter"></i></div>
       </section>
       <button class="continueBtn" id="continueBtn">继续上次看到的位置</button>
-      <div class="episodeList" id="episodeList"></div>
+      <div class="episodeList" id="episodeList"><div class="empty">正在载入目录...</div></div>
     </aside>
 
     <main class="readerPane">
@@ -7619,27 +7629,50 @@
       }
     };
 
+    const storageFallback = new Map();
+
+    function storageGet(key) {
+      try {
+        const value = window.localStorage.getItem(key);
+        if (value !== null) storageFallback.set(key, value);
+        return value;
+      } catch {
+        return storageFallback.has(key) ? storageFallback.get(key) : null;
+      }
+    }
+
+    function storageSet(key, value) {
+      storageFallback.set(key, value);
+      try {
+        window.localStorage.setItem(key, value);
+      } catch {
+        // Some mobile in-app browsers disable local storage. Session progress still works in memory.
+      }
+    }
+
     function loadCompleted(storageKey) {
       try {
-        return new Set(JSON.parse(localStorage.getItem(storageKey) || "[]"));
+        return new Set(JSON.parse(storageGet(storageKey) || "[]"));
       } catch {
         return new Set();
       }
     }
 
-    let activeLibraryKey = localStorage.getItem("storyShelf.activeLibrary") || "pokemon";
+    const LIST_BATCH_SIZE = 40;
+    let activeLibraryKey = storageGet("storyShelf.activeLibrary") || "pokemon";
     if (!libraries[activeLibraryKey]) activeLibraryKey = "pokemon";
 
     function initialEpisode(library) {
-      const stored = Number(localStorage.getItem(library.storage.episode));
+      const stored = Number(storageGet(library.storage.episode));
       return library.items.some(item => item.no === stored) ? stored : library.items[0].no;
     }
 
     const states = Object.fromEntries(Object.values(libraries).map(library => [library.key, {
       episode: initialEpisode(library),
-      paragraph: Math.max(0, Number(localStorage.getItem(library.storage.paragraph) || 0)),
+      paragraph: Math.max(0, Number(storageGet(library.storage.paragraph) || 0)),
       completed: loadCompleted(library.storage.completed),
-      query: ""
+      query: "",
+      visibleCount: LIST_BATCH_SIZE
     }]));
 
     const episodeList = document.getElementById("episodeList");
@@ -7657,9 +7690,9 @@
     function save() {
       const library = currentLibrary();
       const state = currentState();
-      localStorage.setItem(library.storage.episode, String(state.episode));
-      localStorage.setItem(library.storage.paragraph, String(state.paragraph));
-      localStorage.setItem(library.storage.completed, JSON.stringify([...state.completed]));
+      storageSet(library.storage.episode, String(state.episode));
+      storageSet(library.storage.paragraph, String(state.paragraph));
+      storageSet(library.storage.completed, JSON.stringify([...state.completed]));
     }
 
     function currentEpisode() {
@@ -7701,7 +7734,8 @@
       const state = currentState();
       const query = state.query.trim().toLowerCase();
       const matches = library.items.filter(item => !query || [item.title, item.original, item.locations, item.people, item.pokemon, item.summary].filter(Boolean).join(" ").toLowerCase().includes(query));
-      episodeList.innerHTML = matches.map(item => `
+      const visibleMatches = matches.slice(0, state.visibleCount);
+      episodeList.innerHTML = visibleMatches.map(item => `
         <button class="episodeCard ${item.no === state.episode ? "active" : ""} ${state.completed.has(item.no) ? "done" : ""}" data-episode="${item.no}">
           <span class="episodeNo">${item.no}</span>
           <span>
@@ -7709,11 +7743,20 @@
             <span class="episodeSummary">${item.summary}</span>
           </span>
         </button>
-      `).join("") || `<div class="empty">没有找到相关内容</div>`;
+      `).join("") + (matches.length > visibleMatches.length ? `
+        <button class="loadMoreBtn" id="loadMoreBtn">继续显示 · ${visibleMatches.length}/${matches.length}</button>
+      ` : "") || `<div class="empty">没有找到相关内容</div>`;
 
       episodeList.querySelectorAll("[data-episode]").forEach(button => {
         button.addEventListener("click", () => openEpisode(Number(button.dataset.episode), true));
       });
+      const loadMoreButton = document.getElementById("loadMoreBtn");
+      if (loadMoreButton) {
+        loadMoreButton.addEventListener("click", () => {
+          state.visibleCount += LIST_BATCH_SIZE;
+          renderList();
+        });
+      }
     }
 
     function renderReader() {
@@ -7815,6 +7858,7 @@
     search.addEventListener("input", event => {
       const state = currentState();
       state.query = event.target.value;
+      state.visibleCount = LIST_BATCH_SIZE;
       renderList();
     });
     document.getElementById("continueBtn").addEventListener("click", () => openEpisode(currentState().episode, false));
@@ -7823,7 +7867,7 @@
         const nextKey = button.dataset.library;
         if (!libraries[nextKey] || nextKey === activeLibraryKey) return;
         activeLibraryKey = nextKey;
-        localStorage.setItem("storyShelf.activeLibrary", activeLibraryKey);
+        storageSet("storyShelf.activeLibrary", activeLibraryKey);
         document.body.classList.remove("reading");
         renderLibraryChrome();
         renderList();
